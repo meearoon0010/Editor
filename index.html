@@ -110,13 +110,13 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
       <select id="fmt"><option value="png">PNG (lossless)</option><option value="jpg">JPG (smaller)</option></select>
     </label>
     <div class="row"><button id="reset">Reset</button><button class="pri" id="dl" style="flex:1">Download matched photo</button></div>
-    <button class="pri" id="lib">Save to photo library</button>
+    <button class="pri" id="lib">Save to photo library / share</button>
     <div id="msg" role="status"></div>
   </div>
 </div>
 <section id="final" hidden>
   <h2>Final result</h2>
-  <div class="hint" id="fh">Your matched photo is ready. If the download did not start, press and hold the image (or right-click it) and choose Save image.</div>
+  <div class="hint" id="fh">Your matched photo is ready. If the download did not start, use Download again, or press and hold the image (or right-click it) and choose Save image.</div>
   <img id="fimg" alt="Final matched photo">
   <div class="row"><button class="pri" id="lib2">Save to photo library</button><button id="dl2">Download again</button><button id="cp">Copy image</button></div>
 </section>
@@ -243,21 +243,37 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
       lastUrl=URL.createObjectURL(r.blob);
       $("fimg").src=lastUrl;$("final").hidden=false;
       var kb=Math.max(1,Math.round(r.blob.size/1024)),over=$("tg").checked&&r.blob.size>(+$("tv").value||1)*($("tu").value==="MB"?1048576:1024);
-      $("fh").textContent="Final size: "+r.w+" × "+r.h+" px, "+kb+" KB"+(over?" (could not reach the target; try PNG to JPG or a smaller size)":"")+". If saving did not start, press and hold the image (or right-click it) and choose Save image.";
+      $("fh").textContent="Final size: "+r.w+" × "+r.h+" px, "+kb+" KB"+(over?" (could not reach the target; try PNG to JPG or a smaller size)":"")+". If saving did not start, use Download again, or press and hold (or right-click) the image and choose Save image.";
       cb()}).catch(function(){say("Export failed. Try a smaller output size.")});
   }
-  function save(){
-    if(typeof claude==="undefined"||!claude.use){noSave();return}
-    claude.use("downloads").then(function(d){
-      if(!d){noSave();return}
-      d.save({filename:lastName,data:lastBlob}).then(function(){say("Saved "+lastName)},function(err){
-        if(err&&err.code==="declined")say("Save cancelled. The final image is shown below.");else noSave()});
-    }).catch(noSave);
+  function anchorSave(){
+    if(!lastBlob||!lastUrl){return false}
+    try{
+      var a=document.createElement("a");a.href=lastUrl;a.download=lastName;a.rel="noopener";a.style.display="none";
+      document.body.appendChild(a);a.click();
+      setTimeout(function(){document.body.removeChild(a)},300);
+      say("Download started: "+lastName+". If nothing happened, press and hold (or right-click) the final image and choose Save image.");
+      return true;
+    }catch(e){return false}
   }
-  function noSave(){say("Direct download is not available in this view. Press and hold the final image below (or right-click it) and choose Save image.")}
+  function save(){
+    // Inside the Claude viewer use its downloads capability; everywhere else (PC, phone, tablet) use a normal browser download.
+    if(typeof claude!=="undefined"&&claude&&claude.use){
+      claude.use("downloads").then(function(d){
+        if(!d){if(!anchorSave())noSave();return}
+        d.save({filename:lastName,data:lastBlob}).then(function(){say("Saved "+lastName)},function(err){
+          if(err&&err.code==="declined")say("Save cancelled. The final image is shown below.");else if(!anchorSave())noSave()});
+      }).catch(function(){if(!anchorSave())noSave()});
+      return;
+    }
+    if(!anchorSave())noSave();
+  }
+  function noSave(){say("Direct download is not available in this browser. Press and hold the final image below (or right-click it) and choose Save image.")}
   function go(){make(function(){save();$("final").scrollIntoView({behavior:"smooth",block:"nearest"})})}
   $("tg").onchange=function(){$("tgbox").hidden=!$("tg").checked};
   async function shareFile(){
+    var touch=window.matchMedia&&window.matchMedia("(pointer:coarse)").matches;
+    if(!touch)return false;
     try{
       var file=new File([lastBlob],lastName,{type:lastBlob.type});
       if(navigator.canShare&&navigator.canShare({files:[file]})){
@@ -272,11 +288,19 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
   $("lib2").onclick=toLibrary;
   $("dl").onclick=go;
   $("dl2").onclick=function(){if(lastBlob)save();else go()};
+  function toPng(blob){
+    if(blob.type==="image/png")return Promise.resolve(blob);
+    return new Promise(function(res,rej){
+      var im=new Image(),u=URL.createObjectURL(blob);
+      im.onload=function(){var c=document.createElement("canvas");c.width=im.naturalWidth;c.height=im.naturalHeight;c.getContext("2d").drawImage(im,0,0);URL.revokeObjectURL(u);c.toBlob(function(b){b?res(b):rej()},"image/png")};
+      im.onerror=function(){URL.revokeObjectURL(u);rej()};im.src=u;
+    });
+  }
   $("cp").onclick=function(){
     if(!lastBlob)return;
-    if(lastBlob.type!=="image/png"){say("Copy works with PNG. Switch the format to PNG and try again.");return}
-    try{navigator.clipboard.write([new ClipboardItem({"image/png":lastBlob.type==="image/png"?lastBlob:lastBlob})]).then(function(){say("Image copied.")},function(){say("Copy is blocked here. Press and hold the image to save it.")})}
-    catch(e){say("Copy is not supported here. Press and hold the image to save it.")}
+    if(!navigator.clipboard||typeof ClipboardItem==="undefined"){say("Copy is not supported in this browser. Use Download instead.");return}
+    var item=new ClipboardItem({"image/png":toPng(lastBlob)});
+    navigator.clipboard.write([item]).then(function(){say("Image copied.")},function(){say("Copy is blocked here. Use Download or press and hold the image to save it.")});
   };
   window.addEventListener("load",labels);
 })();

@@ -50,6 +50,12 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
 .sz{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .sz select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 .sz input[type=number]{font:inherit;width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.sec{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+.sec h3{margin:0;font-size:14px;font-weight:600}
+.sec small{color:var(--mut);font-size:12px;line-height:1.35}
+.seg3 button[aria-pressed=true],.tog[aria-pressed=true]{background:var(--acc);color:var(--accfg);border-color:var(--acc)}
+.seg3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.row.wrap{flex-wrap:wrap}
 .chk{flex-direction:row!important;align-items:center;gap:8px!important}
 .pr{display:flex;gap:6px;flex-wrap:wrap}.pr button{padding:5px 9px;font-size:12px}
 #msg{font-size:13px;color:var(--mut);min-height:18px}
@@ -89,9 +95,30 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
     <label><b>Model overlay <span id="ovv">40%</span></b><input type="range" id="ov" min="0" max="100" value="40"></label>
     <label><b>Zoom <span id="zv">100%</span></b><input type="range" id="zm" min="20" max="400" value="100"></label>
     <label><b>Rotate <span id="rv">0°</span></b><input type="range" id="rt" min="-45" max="45" step="0.1" value="0"></label>
+    <div class="sec" id="rmsec">
+      <h3>Remove background</h3>
+      <button class="pri" id="ai">Auto remove (AI)</button>
+      <small>Best for people, products and busy backgrounds. Needs an internet connection the first time (it downloads a small model, then runs on your device). Your photo is not uploaded.</small>
+      <div class="row wrap">
+        <input type="color" id="rbk" value="#ffffff" aria-label="Colour to remove">
+        <button id="rpick" class="tog" aria-pressed="false">Pick from photo</button>
+        <button id="redge">Use edge colour</button>
+      </div>
+      <label><b>Tolerance <span id="rtv">40</span></b><input type="range" id="rtol" min="1" max="200" value="40"></label>
+      <label><b>Edge softness <span id="rsv">12</span></b><input type="range" id="rsoft" min="0" max="80" value="12"></label>
+      <label class="chk"><input type="checkbox" id="rcont" checked>Only remove areas connected to the photo edges</label>
+      <button id="rcol">Remove this colour (works offline)</button>
+      <div class="seg3" role="group" aria-label="Touch-up tool">
+        <button data-t="move" aria-pressed="true">Move</button>
+        <button data-t="erase" aria-pressed="false">Erase</button>
+        <button data-t="restore" aria-pressed="false">Restore</button>
+      </div>
+      <label><b>Brush size <span id="bzv">20</span></b><input type="range" id="bsz" min="1" max="100" value="20"></label>
+      <div class="row"><button id="undo" disabled style="flex:1">Undo</button><button id="orig" disabled style="flex:1">Restore original</button></div>
+    </div>
     <label>Empty areas (background)
       <div class="row">
-        <select id="bgm"><option value="color">Solid colour</option><option value="blur">Blurred photo</option></select>
+        <select id="bgm"><option value="color">Solid colour</option><option value="blur">Blurred photo</option><option value="none">Transparent (PNG)</option></select>
         <input type="color" id="bgc" value="#ffffff" aria-label="Background colour">
         <button id="edge" title="Use the model's edge colour">Match model</button>
       </div>
@@ -123,7 +150,10 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
 </main>
 <script>
 (function(){
-  var M=null,P=null,W=0,H=0,mode="cover",z=1,rot=0,ox=0,oy=0;
+  var M=null,P=null,Porig=null,W=0,H=0,mode="cover",z=1,rot=0,ox=0,oy=0;
+  var origC=null,cutC=null,hist=[],tool="move",pickMode=false,stroking=false,sl=null,hx=-1,hy=-1,CUTMAX=3000;
+  function pw(){return P.naturalWidth||P.width}
+  function ph(){return P.naturalHeight||P.height}
   var cv=document.getElementById("cv"),ctx=cv.getContext("2d");
   var $=function(i){return document.getElementById(i)};
   var MAX=4096;
@@ -142,10 +172,10 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
     load(f,function(im){M=im;W=im.naturalWidth;H=im.naturalHeight;var s=Math.min(1,MAX/Math.max(W,H));W=Math.round(W*s);H=Math.round(H*s);
       cv.width=W;cv.height=H;setOut(W,H);thumb($("t1"),$("i1"),im,f.name);say("");fitReset();show()})};
   $("f2").onchange=function(e){var f=e.target.files[0];if(!f)return;
-    load(f,function(im){P=im;thumb($("t2"),$("i2"),im,f.name);say("");fitReset();show()})};
+    load(f,function(im){P=im;Porig=im;origC=null;cutC=null;hist=[];setTool("move");setPick(false);thumb($("t2"),$("i2"),im,f.name);say("");updBtns();fitReset();show()})};
   function show(){$("work").hidden=!(M&&P);if(M&&P)draw(true)}
   function base(){ // scale at 100% zoom for current mode
-    var w=P.naturalWidth,h=P.naturalHeight;
+    var w=pw(),h=ph();
     if(mode==="contain")return Math.min(W/w,H/h);
     return Math.max(W/w,H/h);
   }
@@ -155,19 +185,22 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
   function draw(preview){
     if(!M||!P)return;
     ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,W,H);
-    var w=P.naturalWidth,h=P.naturalHeight;
+    var w=pw(),h=ph();
     // background
     if($("bgm").value==="blur"){
-      var s=Math.max(W/w,H/h)*1.1;
+      var B=Porig||P,bw=B.naturalWidth||B.width,bh=B.naturalHeight||B.height,s=Math.max(W/bw,H/bh)*1.1;
       try{ctx.filter="blur("+Math.round(Math.max(W,H)/40)+"px)"}catch(e){}
-      ctx.drawImage(P,W/2-w*s/2,H/2-h*s/2,w*s,h*s);ctx.filter="none";
+      ctx.drawImage(B,W/2-bw*s/2,H/2-bh*s/2,bw*s,bh*s);ctx.filter="none";
+    }else if($("bgm").value==="none"){
+      if(!preview&&$("fmt").value==="jpg"){ctx.fillStyle="#ffffff";ctx.fillRect(0,0,W,H)} // JPG cannot be transparent
     }else{ctx.fillStyle=$("bgc").value;ctx.fillRect(0,0,W,H)}
     // photo
     ctx.save();ctx.translate(W/2+ox,H/2+oy);ctx.rotate(rot*Math.PI/180);
     if(mode==="stretch"){ctx.drawImage(P,-W*z/2,-H*z/2,W*z,H*z)}
     else{var k=base()*z;ctx.drawImage(P,-w*k/2,-h*k/2,w*k,h*k)}
     ctx.restore();
-    if(preview){var o=$("ov").value/100;if(o>0){ctx.globalAlpha=o;ctx.drawImage(M,0,0,W,H);ctx.globalAlpha=1}}
+    if(preview){var o=$("ov").value/100;if(o>0){ctx.globalAlpha=o;ctx.drawImage(M,0,0,W,H);ctx.globalAlpha=1}
+      if(tool!=="move"&&hx>=0){var rc=brushR(),lw=Math.max(1,W/600);ctx.beginPath();ctx.arc(hx,hy,rc,0,6.2832);ctx.lineWidth=lw*2;ctx.strokeStyle="#000";ctx.stroke();ctx.lineWidth=lw;ctx.strokeStyle="#fff";ctx.stroke()}}
   }
 
   // controls
@@ -176,7 +209,7 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
   $("ov").oninput=function(){labels();draw(true)};
   $("zm").oninput=function(){z=$("zm").value/100;labels();draw(true)};
   $("rt").oninput=function(){rot=+$("rt").value;labels();draw(true)};
-  $("bgm").onchange=function(){draw(true)};$("bgc").oninput=function(){draw(true)};
+  $("bgm").onchange=function(){draw(true)};$("fmt").onchange=function(){draw(true)};$("bgc").oninput=function(){draw(true)};
   $("reset").onclick=fitReset;
   $("edge").onclick=function(){
     if(!M)return;var c=document.createElement("canvas");c.width=c.height=48;var x=c.getContext("2d");x.drawImage(M,0,0,48,48);
@@ -185,18 +218,54 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
     var h=function(v){return("0"+Math.round(v/n).toString(16)).slice(-2)};
     $("bgc").value="#"+h(r)+h(g)+h(b);$("bgm").value="color";draw(true);say("Background set to the model's edge colour.")};
 
-  // drag + wheel + pinch
+  // drag + wheel + pinch + brush + colour pick
   var pts={},last=null,pd=0;
   function scale(){var r=cv.getBoundingClientRect();return W/r.width}
-  cv.addEventListener("pointerdown",function(e){cv.setPointerCapture(e.pointerId);pts[e.pointerId]=e;last={x:e.clientX,y:e.clientY};cv.style.cursor="grabbing"});
+  function cpos(e){var r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+  function toPhoto(cx,cy){ // canvas px -> photo px (in P's own pixel grid)
+    var dx=cx-(W/2+ox),dy=cy-(H/2+oy),a=rot*Math.PI/180,c=Math.cos(a),s=Math.sin(a),x=dx*c+dy*s,y=-dx*s+dy*c,w=pw(),h=ph();
+    if(mode==="stretch")return{x:x/(W*z)*w+w/2,y:y/(H*z)*h+h/2};
+    var k=base()*z;return{x:x/k+w/2,y:y/k+h/2};
+  }
+  function kmean(){return mode==="stretch"?Math.sqrt((W*z/pw())*(H*z/ph())):base()*z}
+  function brushR(){return $("bsz").value/100*Math.max(W,H)*0.1}
+  function setPick(on){pickMode=on;$("rpick").setAttribute("aria-pressed",on);cv.style.cursor=on?"crosshair":(tool==="move"?"grab":"crosshair")}
+  function setTool(t){tool=t;document.querySelectorAll(".seg3 button").forEach(function(x){x.setAttribute("aria-pressed",x.dataset.t===t)});cv.style.cursor=pickMode?"crosshair":(t==="move"?"grab":"crosshair");draw(true)}
+  function stroke(p,erase){
+    var cc=cutC.getContext("2d"),r=brushR()/kmean()*(cutC.width/pw()),i,n,dx,dy,d,st;
+    var q=toCut(p),a=sl?sl:q;dx=q.x-a.x;dy=q.y-a.y;d=Math.hypot(dx,dy);st=Math.max(1,r/3);n=Math.max(1,Math.ceil(d/st));
+    for(i=1;i<=n;i++){var x=a.x+dx*i/n,y=a.y+dy*i/n;
+      cc.save();cc.beginPath();cc.arc(x,y,r,0,6.2832);
+      if(erase){cc.globalCompositeOperation="destination-out";cc.fill()}else{cc.clip();cc.drawImage(origC,0,0)}
+      cc.restore()}
+    sl=q;
+  }
+  function toCut(p){return{x:p.x*cutC.width/pw(),y:p.y*cutC.height/ph()}}
+  function pickAt(e){
+    var c=cpos(e),p=toPhoto(c.x,c.y),fu=p.x/pw(),fv=p.y/ph();
+    if(fu<0||fv<0||fu>=1||fv>=1){say("Tap inside the photo to pick a colour.");return}
+    ensureOrig();var x=Math.floor(fu*origC.width),y=Math.floor(fv*origC.height),d=origC.getContext("2d").getImageData(x,y,1,1).data;
+    $("rbk").value=hex(d[0],d[1],d[2]);setPick(false);say("Colour picked. Adjust tolerance, then press Remove this colour.");
+  }
+  cv.addEventListener("pointerdown",function(e){
+    cv.setPointerCapture(e.pointerId);pts[e.pointerId]=e;last={x:e.clientX,y:e.clientY};
+    var n=Object.keys(pts).length;
+    if(pickMode&&n===1){pickAt(e);return}
+    if(tool!=="move"&&n===1&&Porig){ensureCut();snap();stroking=true;sl=null;var c=cpos(e);stroke(toPhoto(c.x,c.y),tool==="erase");draw(true);return}
+    cv.style.cursor=tool==="move"?"grabbing":"crosshair"});
   cv.addEventListener("pointermove",function(e){
-    if(!pts[e.pointerId])return;pts[e.pointerId]=e;var ids=Object.keys(pts);
-    if(ids.length===2){var a=pts[ids[0]],b=pts[ids[1]],d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+    if(tool!=="move"){var c0=cpos(e);hx=c0.x;hy=c0.y}
+    if(!pts[e.pointerId]){if(tool!=="move")draw(true);return}
+    pts[e.pointerId]=e;var ids=Object.keys(pts);
+    if(ids.length===2){stroking=false;var a=pts[ids[0]],b=pts[ids[1]],d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
       if(pd){setZ(z*d/pd)}pd=d;return}
-    if(mode==="stretch"&&false)return;
+    if(stroking){var c=cpos(e);stroke(toPhoto(c.x,c.y),tool==="erase");draw(true);return}
+    if(tool!=="move"||pickMode){if(tool!=="move")draw(true);return}
     var s=scale();ox+=(e.clientX-last.x)*s;oy+=(e.clientY-last.y)*s;last={x:e.clientX,y:e.clientY};draw(true)});
-  function up(e){delete pts[e.pointerId];pd=0;cv.style.cursor="grab";var ids=Object.keys(pts);if(ids.length===1){last={x:pts[ids[0]].clientX,y:pts[ids[0]].clientY}}}
+  function up(e){delete pts[e.pointerId];pd=0;if(stroking){stroking=false;sl=null;updBtns()}
+    cv.style.cursor=tool==="move"&&!pickMode?"grab":"crosshair";var ids=Object.keys(pts);if(ids.length===1){last={x:pts[ids[0]].clientX,y:pts[ids[0]].clientY}}}
   cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",up);
+  cv.addEventListener("pointerleave",function(){hx=-1;if(tool!=="move")draw(true)});
   cv.addEventListener("wheel",function(e){e.preventDefault();setZ(z*(e.deltaY<0?1.06:1/1.06))},{passive:false});
   function setZ(v){z=Math.min(4,Math.max(.2,v));$("zm").value=Math.round(z*100);labels();draw(true)}
 
@@ -208,6 +277,88 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
   $("oh").oninput=function(){if($("olk").checked&&H){$("ow").value=Math.round($("oh").value*W/H)||""}};
   [["25%",.25],["50%",.5],["75%",.75],["100%",1],["200%",2]].forEach(function(p){
     var b=document.createElement("button");b.textContent=p[0];b.onclick=function(){if(W)setOut(W*p[1],H*p[1])};$("pr").appendChild(b)});
+
+  // ---------- background removal ----------
+  function hex(r,g,b){return"#"+[r,g,b].map(function(v){return("0"+v.toString(16)).slice(-2)}).join("")}
+  function mkCanvas(w,h){var c=document.createElement("canvas");c.width=w;c.height=h;return c}
+  function ensureOrig(){
+    if(origC||!Porig)return;
+    var nw=Porig.naturalWidth,nh=Porig.naturalHeight,k=Math.min(1,CUTMAX/Math.max(nw,nh));
+    origC=mkCanvas(Math.max(1,Math.round(nw*k)),Math.max(1,Math.round(nh*k)));
+    var x=origC.getContext("2d");x.imageSmoothingQuality="high";x.drawImage(Porig,0,0,origC.width,origC.height);
+  }
+  function ensureCut(){
+    ensureOrig();if(cutC)return;
+    cutC=mkCanvas(origC.width,origC.height);cutC.getContext("2d").drawImage(origC,0,0);P=cutC;
+  }
+  function snap(){
+    var c=mkCanvas(cutC.width,cutC.height);c.getContext("2d").drawImage(cutC,0,0);hist.push(c);if(hist.length>4)hist.shift();updBtns();
+  }
+  function updBtns(){$("undo").disabled=!hist.length;$("orig").disabled=!cutC}
+  $("undo").onclick=function(){
+    if(!hist.length||!cutC)return;var c=hist.pop(),x=cutC.getContext("2d");x.clearRect(0,0,cutC.width,cutC.height);x.drawImage(c,0,0);updBtns();draw(true);say("Undone.")};
+  $("orig").onclick=function(){if(!Porig)return;P=Porig;cutC=null;hist=[];updBtns();draw(true);say("Original photo restored.")};
+  document.querySelectorAll(".seg3 button").forEach(function(b){b.onclick=function(){setPick(false);setTool(b.dataset.t);
+    if(b.dataset.t!=="move")say(b.dataset.t==="erase"?"Drag over the photo to erase. Pinch or scroll to zoom in for detail.":"Drag over the photo to bring back erased parts.")}});
+  $("bsz").oninput=function(){$("bzv").textContent=$("bsz").value;draw(true)};
+  $("rtol").oninput=function(){$("rtv").textContent=$("rtol").value};
+  $("rsoft").oninput=function(){$("rsv").textContent=$("rsoft").value};
+  $("rpick").onclick=function(){if(!Porig)return;setTool("move");setPick(!pickMode);say(pickMode?"Tap the background colour on the photo.":"")};
+  $("redge").onclick=function(){
+    if(!Porig)return;ensureOrig();var w=origC.width,h=origC.height,d=origC.getContext("2d").getImageData(0,0,w,h).data,r=0,g=0,b=0,n=0,i,p,stp=Math.max(1,Math.floor(Math.max(w,h)/200));
+    for(i=0;i<w;i+=stp){[0,h-1].forEach(function(y){p=(y*w+i)*4;r+=d[p];g+=d[p+1];b+=d[p+2];n++})}
+    for(i=0;i<h;i+=stp){[0,w-1].forEach(function(x){p=(i*w+x)*4;r+=d[p];g+=d[p+1];b+=d[p+2];n++})}
+    $("rbk").value=hex(Math.round(r/n),Math.round(g/n),Math.round(b/n));say("Edge colour selected.")};
+
+  // Pure pixel routine: makes pixels close to (kr,kg,kb) transparent. Returns how many pixels changed.
+  function cutColor(d,w,h,kr,kg,kb,tol,soft,contig){
+    var n=w*h,hi=tol+Math.max(0,soft),i,p,x,y,ch=0;
+    var dist=function(i){var p=i*4;if(d[p+3]===0)return 0;var a=d[p]-kr,b=d[p+1]-kg,c=d[p+2]-kb;return Math.sqrt(a*a+b*b+c*c)};
+    var inR=null;
+    if(contig){
+      inR=new Uint8Array(n);var st=new Int32Array(n),sp=0;
+      var push=function(i){if(!inR[i]&&dist(i)<=hi){inR[i]=1;st[sp++]=i}};
+      for(x=0;x<w;x++){push(x);push((h-1)*w+x)}
+      for(y=0;y<h;y++){push(y*w);push(y*w+w-1)}
+      while(sp){i=st[--sp];x=i%w;y=(i-x)/w;
+        if(x>0)push(i-1);if(x<w-1)push(i+1);if(y>0)push(i-w);if(y<h-1)push(i+w)}
+    }
+    for(i=0;i<n;i++){
+      if(contig&&!inR[i])continue;
+      var dd=dist(i),na;
+      if(dd<=tol)na=0;else if(dd>=hi||hi===tol)na=255;else na=Math.round((dd-tol)/(hi-tol)*255);
+      p=i*4+3;if(na<d[p]){d[p]=na;ch++}
+    }
+    return ch;
+  }
+  $("rcol").onclick=function(){
+    if(!Porig)return;ensureCut();snap();
+    var x=cutC.getContext("2d"),img=x.getImageData(0,0,cutC.width,cutC.height),hexv=$("rbk").value,
+      kr=parseInt(hexv.substr(1,2),16),kg=parseInt(hexv.substr(3,2),16),kb=parseInt(hexv.substr(5,2),16);
+    var ch=cutColor(img.data,img.width,img.height,kr,kg,kb,+$("rtol").value,+$("rsoft").value,$("rcont").checked);
+    x.putImageData(img,0,0);updBtns();draw(true);
+    if(!ch){hist.pop();updBtns();say("Nothing matched. Raise the tolerance, pick the colour from the photo, or untick the edge-connected option.")}
+    else say("Background removed. Use Erase and Restore to touch up, or run it again on another colour. Set Empty areas to Transparent (PNG) to keep it see-through.");
+  };
+  var aiBusy=false;
+  $("ai").onclick=async function(){
+    if(!Porig||aiBusy)return;
+    aiBusy=true;$("ai").disabled=true;say("Loading background remover…");
+    try{
+      ensureOrig();
+      var mod=await import("https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.4.5/+esm");
+      var src=await new Promise(function(r){origC.toBlob(r,"image/png")});
+      var out=await mod.removeBackground(src,{output:{format:"image/png"},progress:function(key,cur,tot){
+        say(tot?("Working… "+(String(key).indexOf("fetch")===0?"downloading model ":"processing ")+Math.round(cur/tot*100)+"%"):"Working…")}});
+      var im=await new Promise(function(res,rej){var i=new Image(),u=URL.createObjectURL(out);i.onload=function(){URL.revokeObjectURL(u);res(i)};i.onerror=rej;i.src=u});
+      if(cutC)snap();else{ensureCut();snap()}
+      var x=cutC.getContext("2d");x.clearRect(0,0,cutC.width,cutC.height);x.drawImage(im,0,0,cutC.width,cutC.height);
+      updBtns();draw(true);say("Background removed. Use Erase and Restore to touch up. Set Empty areas to Transparent (PNG) to keep it see-through.");
+    }catch(err){
+      say("Auto remove could not run here (it needs internet access to download the model, and some previews block that). Use the colour method below, or open the page in your browser.");
+    }finally{aiBusy=false;$("ai").disabled=false}
+  };
+
   // download
   var lastBlob=null,lastName="",lastUrl=null;
   function blobOf(c,type,q){return new Promise(function(r){c.toBlob(r,type,q)})}

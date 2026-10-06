@@ -65,6 +65,11 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
 .ready .thumb{height:64px}.ready .drop{padding:8px}.ready p.sub{display:none}
 @media (min-width:721px){.stage{position:sticky;top:12px}}
 @media (max-width:720px){canvas{max-height:46vh}}
+.ask textarea{width:100%;min-height:68px;resize:vertical;font:inherit;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+.ask input[type=password]{width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chips button{font-size:12px;padding:5px 10px;border-radius:99px}
+#apout{font-size:13px;line-height:1.45;white-space:pre-line;color:var(--ink)}#apout:empty{display:none}
+.ask details{font-size:12px;color:var(--mut)}.ask details summary{cursor:pointer;padding:2px 0}
 .chk{flex-direction:row!important;align-items:center;gap:8px!important}
 .pr{display:flex;gap:6px;flex-wrap:wrap}.pr button{padding:5px 9px;font-size:12px}
 #msg{font-size:13px;color:var(--mut);min-height:18px}
@@ -113,6 +118,20 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
     <button id="reset">Reset position</button>
     </div>
     <div class="tp" id="tp-bg" role="tabpanel" aria-labelledby="tb-bg" hidden>
+    <div class="sec ask" id="asksec">
+      <h3>Ask AI</h3>
+      <textarea id="ap" rows="2" placeholder='Describe what to do, e.g. "remove the background and make it blue"' aria-label="Describe the background edit"></textarea>
+      <button class="pri" id="apgo">Run</button>
+      <div class="chips" id="apchips">
+        <button>Remove the background</button><button>Make the background blue</button><button>Blur the background</button><button>Transparent background</button><button>Remove the white</button>
+      </div>
+      <div id="apout" role="status" aria-live="polite"></div>
+      <details><summary>Smarter understanding (optional)</summary>
+        <small>Works without this using built-in commands. Add your own Anthropic API key to let Claude understand any wording. The key stays in this browser and is sent only to api.anthropic.com. Use a key with a spend limit and avoid shared computers.</small>
+        <input type="password" id="akey" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key">
+        <label class="chk"><input type="checkbox" id="akeep">Remember on this device</label>
+      </details>
+    </div>
     <div class="sec" id="rmsec">
       <h3>Remove background</h3>
       <button class="pri" id="ai">Auto remove (AI)</button>
@@ -362,8 +381,8 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
     else say("Background removed. Use Erase and Restore to touch up, or run it again on another colour. Set Empty areas to Transparent (PNG) to keep it see-through.");
   };
   var aiBusy=false;
-  $("ai").onclick=async function(){
-    if(!Porig||aiBusy)return;
+  async function runAI(){
+    if(!Porig||aiBusy)return false;
     aiBusy=true;$("ai").disabled=true;say("Loading background remover…");
     try{
       ensureOrig();
@@ -375,10 +394,13 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
       if(cutC)snap();else{ensureCut();snap()}
       var x=cutC.getContext("2d");x.clearRect(0,0,cutC.width,cutC.height);x.drawImage(im,0,0,cutC.width,cutC.height);
       updBtns();draw(true);say("Background removed. Use Erase and Restore to touch up. Set Empty areas to Transparent (PNG) to keep it see-through.");
+      return true;
     }catch(err){
       say("Auto remove could not run here (it needs internet access to download the model, and some previews block that). Use the colour method below, or open the page in your browser.");
+      return false;
     }finally{aiBusy=false;$("ai").disabled=false}
-  };
+  }
+  $("ai").onclick=runAI;
 
   // download
   var lastBlob=null,lastName="",lastUrl=null;
@@ -474,6 +496,107 @@ select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);b
     var item=new ClipboardItem({"image/png":toPng(lastBlob)});
     navigator.clipboard.write([item]).then(function(){say("Image copied.")},function(){say("Copy is blocked here. Use Download or press and hold the image to save it.")});
   };
+
+  // ---------- Ask AI (prompt -> actions) ----------
+  var apiKey="";try{apiKey=localStorage.getItem("pm_key")||""}catch(e){}
+  if(apiKey){$("akey").value=apiKey;$("akeep").checked=true}
+  var cc=document.createElement("canvas").getContext("2d");
+  function cssColor(n){
+    if(!n)return null;n=String(n).trim().toLowerCase();if(n==="transparent")return null;
+    cc.fillStyle="#010203";cc.fillStyle=n;var a=cc.fillStyle;cc.fillStyle="#040506";cc.fillStyle=n;var b=cc.fillStyle;
+    if(a!==b||a.charAt(0)!=="#")return null;
+    if(a.length===4)a="#"+a[1]+a[1]+a[2]+a[2]+a[3]+a[3];return a;
+  }
+  function findColor(t){
+    var m=t.match(/#[0-9a-f]{6}\b|#[0-9a-f]{3}\b/i);if(m)return cssColor(m[0]);
+    var al={sky:"skyblue",navy:"navy",beige:"beige"},w=t.match(/[a-z]+/g)||[],i,c;
+    for(i=0;i<w.length;i++){
+      if(i+1<w.length){c=cssColor(w[i]+w[i+1]);if(c)return c}
+      c=cssColor(al[w[i]]||w[i]);if(c)return c;
+    }
+    return null;
+  }
+  function localPlan(t){
+    t=t.toLowerCase();var A=[],col=findColor(t);
+    if(/\bundo\b|go back/.test(t))return[{a:"undo"}];
+    if(/(restore|reset|revert|bring back).*(original|everything|photo)|start over/.test(t))return[{a:"restore_original"}];
+    var rm=/\b(remove|delete|erase|get rid of|cut ?out|cutout|isolate|clear|take out|without)\b/.test(t),
+      bgw=/\b(background|backdrop|bg|behind)\b/.test(t),
+      setv=/\b(make|change|set|turn|replace|swap|put|use|fill|paint|colou?r)\b/.test(t),
+      blur=/\bblur/.test(t),tr=/transparent|see.?through|no background|png/.test(t),
+      keep=/\b(keep|only|just|isolate|except)\b/.test(t)&&/\b(person|people|subject|face|me|product|object|man|woman|item)\b/.test(t),
+      need=!cutC,tol=t.match(/tolerance\D{0,6}(\d+)/);
+    if(tol)A.push({a:"tolerance",value:+tol[1]});
+    if(/\b(remove|delete|erase)\b.*\b(person|people|man|woman|car|logo|text|watermark)\b/.test(t)&&!bgw&&!keep)return[{a:"unsupported"}];
+    if(rm&&col&&!setv&&!blur&&!tr){A.push({a:"remove_color",color:col});return A}
+    if(blur){A.push({a:"remove_bg"},{a:"bg_blur"});return A}
+    if(col&&setv&&(bgw||!rm)){if(need||rm)A.push({a:"remove_bg"});A.push({a:"bg_color",color:col});return A}
+    if(tr){if(need||rm||keep)A.push({a:"remove_bg"});A.push({a:"bg_transparent"});return A}
+    if(rm||keep){A.push({a:"remove_bg"});return A}
+    return A;
+  }
+  var SYS='You control a photo background editor. Reply with ONLY JSON: {"say":"one short sentence","actions":[...]}. Actions: {"a":"remove_bg"} AI cutout of the main subject; {"a":"remove_color","color":"#rrggbb" or "edge","tolerance":1-200} remove a flat background colour ("edge" = colour at the photo edges); {"a":"bg_color","color":"#rrggbb"} fill empty areas with a colour; {"a":"bg_transparent"}; {"a":"bg_blur"} blurred copy of the photo behind the subject; {"a":"undo"}; {"a":"restore_original"}; {"a":"tolerance","value":1-200}. To change, replace or blur the background, first include remove_bg unless state.cutout is true. Convert colour names to hex. If the request cannot be done with these actions, return an empty actions list and explain in say.';
+  async function llmPlan(text){
+    var r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"content-type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:400,system:SYS,messages:[{role:"user",content:"state: "+JSON.stringify({cutout:!!cutC})+"\nrequest: "+text}]})});
+    if(!r.ok)throw new Error("API "+r.status);
+    var j=await r.json(),t=(j.content||[]).map(function(c){return c.text||""}).join("").replace(/```json|```/g,"").trim(),o=JSON.parse(t),ok={remove_bg:1,remove_color:1,bg_color:1,bg_transparent:1,bg_blur:1,undo:1,restore_original:1,tolerance:1};
+    var acts=(o.actions||[]).filter(function(x){return x&&ok[x.a]}).map(function(x){
+      if(x.color&&x.color!=="edge")x.color=cssColor(x.color)||(/^#[0-9a-f]{6}$/i.test(x.color)?x.color:null);
+      if((x.a==="bg_color"||x.a==="remove_color")&&!x.color)x.a="skip";return x});
+    return{say:o.say||"",actions:acts.filter(function(x){return x.a!=="skip"})};
+  }
+  function setBg(mode,color){
+    $("bgm").value=mode;if(color)$("bgc").value=color;draw(true);
+  }
+  async function runActions(list){
+    var log=[];
+    for(var i=0;i<list.length;i++){
+      var x=list[i];
+      if(x.a==="remove_bg"){
+        if(await runAI())log.push("Removed the background (AI).");
+        else{$("redge").onclick();var n=cutByColor($("rbk").value,45,12,true);log.push(n?"Removed the background by edge colour (the AI model could not load here).":"Could not remove the background automatically. Try the colour or brush tools.")}
+      }else if(x.a==="remove_color"){
+        var hx=x.color==="edge"?($("redge").onclick(),$("rbk").value):x.color;$("rbk").value=hx;
+        var n2=cutByColor(hx,Math.min(200,+x.tolerance||+$("rtol").value),+$("rsoft").value,true);
+        log.push(n2?"Removed the colour "+hx+" from the edges.":"No pixels matched "+hx+". Try a higher tolerance.");
+      }else if(x.a==="bg_color"){setBg("color",x.color);log.push("Background set to "+x.color+".")}
+      else if(x.a==="bg_transparent"){setBg("none");$("fmt").value="png";log.push("Background set to transparent (PNG).")}
+      else if(x.a==="bg_blur"){setBg("blur");log.push("Background set to a blurred copy of the photo.")}
+      else if(x.a==="undo"){$("undo").onclick();log.push("Undid the last edit.")}
+      else if(x.a==="restore_original"){$("orig").onclick();log.push("Restored the original photo.")}
+      else if(x.a==="tolerance"){var v=Math.max(1,Math.min(200,+x.value||40));$("rtol").value=v;$("rtv").textContent=v;log.push("Tolerance set to "+v+".")}
+    }
+    return log;
+  }
+  function cutByColor(hexv,tol,soft,contig){
+    if(!Porig)return 0;ensureCut();snap();
+    var x=cutC.getContext("2d"),img=x.getImageData(0,0,cutC.width,cutC.height),
+      ch=cutColor(img.data,img.width,img.height,parseInt(hexv.substr(1,2),16),parseInt(hexv.substr(3,2),16),parseInt(hexv.substr(5,2),16),tol,soft,contig);
+    if(!ch){hist.pop();updBtns();return 0}
+    x.putImageData(img,0,0);updBtns();draw(true);return ch;
+  }
+  var apBusy=false;
+  async function askAI(){
+    var text=$("ap").value.trim(),out=$("apout");
+    if(!text){out.textContent="Type what you want, or tap an example.";return}
+    if(!Porig){out.textContent="Upload the photo to edit first.";return}
+    if($("akey").value.trim()!==apiKey){apiKey=$("akey").value.trim()}
+    try{if($("akeep").checked&&apiKey)localStorage.setItem("pm_key",apiKey);else localStorage.removeItem("pm_key")}catch(e){}
+    if(apBusy)return;apBusy=true;$("apgo").disabled=true;out.textContent="Thinking…";
+    var plan=null,note="";
+    try{
+      if(apiKey){try{plan=await llmPlan(text)}catch(e){note="Smart mode failed ("+(e.message||"error")+"), used built-in commands instead.\n"}}
+      if(!plan)plan={say:"",actions:localPlan(text)};
+      if(plan.actions.length===1&&plan.actions[0].a==="unsupported"){out.textContent=note+"I can only change the background. Removing or editing objects inside the photo is not supported."}
+      else if(!plan.actions.length){out.textContent=note+(plan.say||'I did not understand that. Try "remove the background", "make the background blue", "blur the background", "transparent background" or "remove the white".')+(apiKey?"":"\nTip: add an API key below for free-form requests.")}
+      else{out.textContent=note+(plan.say?plan.say+"\n":"")+"Working…";var log=await runActions(plan.actions);out.textContent=note+log.join("\n")}
+    }catch(e){out.textContent="Something went wrong: "+(e.message||e)}
+    finally{apBusy=false;$("apgo").disabled=false}
+  }
+  $("apgo").onclick=askAI;
+  $("ap").onkeydown=function(e){if(e.key==="Enter"&&(e.ctrlKey||e.metaKey||!e.shiftKey)){e.preventDefault();askAI()}};
+  [].slice.call($("apchips").children).forEach(function(b){b.onclick=function(){$("ap").value=b.textContent;askAI()}});
   // tabs
   var curTab="adjust",tabs=[].slice.call(document.querySelectorAll(".tabs button")),
     hints={adjust:"Drag to move, scroll or pinch to zoom. Use the model overlay to line up faces, edges and horizon.",
